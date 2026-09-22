@@ -9,7 +9,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/video.h>
-#include <zephyr/drivers/video-controls.h>
+#include <zephyr/video/controls.h>
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/dlist.h>
@@ -19,7 +19,7 @@
 #include "r_vin.h"
 #include "r_vin_device_types.h"
 #include "r_mipi_csi_contract_types.h"
-#include "video_device.h"
+#include "video_common.h"
 
 LOG_MODULE_REGISTER(renesas_ra_video_vin, CONFIG_VIDEO_LOG_LEVEL);
 
