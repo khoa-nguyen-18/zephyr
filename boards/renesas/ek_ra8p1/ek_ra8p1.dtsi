@@ -144,8 +144,13 @@
 	status = "okay";
 };
 
+/*
+ * GPTCLK is PLL2R / 2 = 240 MHz, below the 300 MHz limit and above PCLKA (125 MHz). The pwm-clock
+ * nodes (camera XCLK 24 MHz, audio MCLK 12 MHz) divide it in whole timer ticks, which needs a
+ * GPTCLK that is a multiple of both. The previous 300 MHz gave 25 MHz instead of 24 MHz.
+ */
 &gptclk {
-	clocks = <&pll2p>;
+	clocks = <&pll2r>;
 	div = <2>;
 	status = "okay";
 };

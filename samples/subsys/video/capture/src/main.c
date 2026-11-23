@@ -436,6 +436,16 @@ int main(void)
 			camera_vbuf->timestamp - last_ts);
 		last_ts = camera_vbuf->timestamp;
 
+		/* TEMP DEBUG: read the sensor gain and exposure once every 60 frames */
+		{
+			static uint32_t dbg_frame_cnt;
+			struct video_control dbg_gain = {.id = VIDEO_CID_ANALOGUE_GAIN};
+
+			if ((dbg_frame_cnt++ % 60U) == 0U) {
+				(void)video_get_ctrl(camera_dev, &dbg_gain);
+			}
+		}
+
 		ret = app_transform_frame(transform_dev, camera_vbuf, &transformed_vbuf);
 		if (ret < 0) {
 			LOG_ERR("Unable to transform video frame");

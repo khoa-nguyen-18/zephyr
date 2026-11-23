@@ -157,6 +157,11 @@
 	interrupt-names = "irq", "err";
 	clocks = <&iclk 0 0>, <&pclka MSTPC 17>, <&cam_clock 0>;
 	clock-names = "aclk", "vclk", "cam-xclk";
+	image-stride = <640>;
+	line-start = <0>;
+	line-end = <479>;
+	pixel-start = <0>;
+	pixel-end = <639>;
 };
 
 &usbhs {
@@ -243,8 +248,8 @@
 		hback-porch = <140>;
 		hfront-porch = <169>;
 		vsync-len = <1>;
-		vback-porch = <20>;
-		vfront-porch = <14>;
+		vback-porch = <40>;
+		vfront-porch = <101>;
 		hsync-active = <0>;
 		vsync-active = <0>;
 		de-active = <1>;
@@ -336,15 +341,15 @@ arducam_ffc_40pin_mipi_csi_xclk: &cam_clock {};
 	interrupt-names = "gtioca", "overflow";
 
 	/*
-	 * GTIOC2A (PD06): codec MCLK and SSIE audio clock. 300 MHz / 24 gives
-	 * 12.5 MHz, 1.7 % above 256 * 48 kHz; 12.288 MHz would mean moving the
+	 * GTIOC2A (PD06): codec MCLK and SSIE audio clock. 240 MHz / 20 gives
+	 * 12 MHz, 2.3 % below 256 * 48 kHz; 12.288 MHz would mean moving the
 	 * PLL shared with the display and USB.
 	 */
 	audio_clock: pwmclock {
 		compatible = "pwm-clock";
 		#clock-cells = <1>;
-		clock-frequency = <12500000>;
-		pwms = <&pwm2 0 PWM_HZ(12500000) PWM_POLARITY_NORMAL>;
+		clock-frequency = <12000000>;
+		pwms = <&pwm2 0 PWM_HZ(12000000) PWM_POLARITY_NORMAL>;
 		status = "disabled";
 	};
 };

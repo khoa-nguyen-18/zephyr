@@ -59,6 +59,21 @@ static void renesas_ra_callback_adapter(display_callback_args_t *p_args)
 	}
 }
 
+/* Wait until the GLCDC applied the pending layer 1 register update (on vsync) */
+static bool ra_display_wait_update_done(void)
+{
+	int64_t end = k_uptime_get() + 50;
+
+	while (R_GLCDC->GR[DISPLAY_FRAME_LAYER_1].VEN_b.PVEN != 0U) {
+		if (k_uptime_get() > end) {
+			return false;
+		}
+		k_usleep(200);
+	}
+
+	return true;
+}
+
 static int ra_display_write(const struct device *dev, const uint16_t x, const uint16_t y,
 			    const struct display_buffer_descriptor *desc, const void *buf)
 {
@@ -116,15 +131,24 @@ static int ra_display_write(const struct device *dev, const uint16_t x, const ui
 	}
 
 	if (data->front_buf != l_pend_buf) {
-		data->pend_buf = l_pend_buf;
+		/*
+		 * The previous buffer change is applied on the next vsync. Calling
+		 * R_GLCDC_BufferChange() before that fails with INVALID_UPDATE_TIMING.
+		 */
+		if (data->display_ctrl.state == DISPLAY_STATE_DISPLAYING &&
+		    !ra_display_wait_update_done()) {
+			LOG_ERR("GLCDC buffer change timeout");
+			return -EBUSY;
+		}
 
-		err = R_GLCDC_BufferChange(&data->display_ctrl, (uint8_t *)data->pend_buf,
+		err = R_GLCDC_BufferChange(&data->display_ctrl, (uint8_t *)l_pend_buf,
 					   DISPLAY_FRAME_LAYER_1);
 		if (err != FSP_SUCCESS) {
-			LOG_ERR("GLCDC buffer change failed");
+			LOG_ERR("GLCDC buffer change failed: %d", err);
 			return -EIO;
 		}
 
+		data->pend_buf = l_pend_buf;
 		vsync_wait = true;
 	}
 
@@ -141,7 +165,24 @@ static int ra_display_write(const struct device *dev, const uint16_t x, const ui
 	if (vsync_wait) {
 		k_sem_reset(&data->frame_buf_sem);
 		k_sem_take(&data->frame_buf_sem, K_FOREVER);
+
+		/* The line detection can fire before the shadow registers are applied */
+		if (!ra_display_wait_update_done()) {
+			LOG_ERR("GLCDC buffer change not applied");
+			return -EBUSY;
+		}
+
 		data->front_buf = data->pend_buf;
+	}
+
+	if (R_GLCDC->SYSCNT.STMON_b.L1UNDF != 0U) {
+		static uint32_t underflow_cnt;
+
+		/* Rate limited: one message per 64 underflows */
+		if ((underflow_cnt++ % 64U) == 0U) {
+			LOG_WRN("GLCDC graphics plane 1 underflow (count %u)", underflow_cnt);
+		}
+		R_GLCDC->SYSCNT.STCLR_b.L1UNDFCLR = 1U;
 	}
 
 	return 0;

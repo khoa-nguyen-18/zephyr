@@ -27,9 +27,9 @@
 
 &arducam_ffc_40pin_mipi_csi_xclk {
 	/*
-	 * OV5640 XCLK must be 24 MHz to match the PLL settings used by the
-	 * sensor and the Renesas reference design. At 12 MHz the MIPI bit rate
-	 * is halved and CSI-2 synchronization fails.
+	 * OV5640 XCLK is 24 MHz, matching the sensor PLL settings and the
+	 * Renesas reference design: pwm12 divides the 240 MHz GPTCLK by 10.
+	 * At 12 MHz the MIPI bit rate is halved and CSI-2 synchronization fails.
 	 */
 	pwms = <&pwm12 0 PWM_KHZ(24000) PWM_POLARITY_NORMAL>;
 	clock-frequency = <DT_FREQ_M(24)>;

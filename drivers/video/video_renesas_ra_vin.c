@@ -8,6 +8,7 @@
 
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/cache.h>
 #include <zephyr/drivers/video.h>
 #include <zephyr/video/controls.h>
 #include <zephyr/irq.h>
@@ -58,7 +59,7 @@ struct video_renesas_ra_vin_data {
 
 	/* buffers given by app, waiting to be used */
 	struct k_fifo fifo_in;
-	/* buffers filled by VIN, ready for app */ 
+	/* buffers filled by VIN, ready for app */
 	struct k_fifo fifo_out;
 
 	atomic_t streaming;
@@ -157,8 +158,8 @@ static uint32_t video_renesas_ra_estimate_pixel_rate(const struct video_frmival 
 	return (uint32_t)(num / den);
 }
 
- /* 
-  * Validate bandwidth after format or frame interval changes 
+ /*
+  * Validate bandwidth after format or frame interval changes
   * This function is only ever called while NOT streaming
   */
 static int video_renesas_ra_vin_update_settings(const struct device *dev)
@@ -193,6 +194,75 @@ static int video_renesas_ra_vin_update_settings(const struct device *dev)
 	return 0;
 }
 
+/* TEMP DEBUG: counters to find why a frame is lost every 4th frame period */
+static struct {
+	uint32_t isr, eof, field, fwc, fwc_null, scan, unknown, nobuf;
+	uint32_t vc[12];
+	uint32_t dl[4];
+} vin_dbg;
+
+static void video_renesas_ra_vin_dbg_poll(void)
+{
+	static const uint32_t vc_bits[12] = {
+		R_MIPI_CSI_VCST0_MLF_Msk, R_MIPI_CSI_VCST0_ECD_Msk, R_MIPI_CSI_VCST0_CRC_Msk,
+		R_MIPI_CSI_VCST0_IDE_Msk, R_MIPI_CSI_VCST0_WCE_Msk, R_MIPI_CSI_VCST0_ECC_Msk,
+		R_MIPI_CSI_VCST0_ECN_Msk, R_MIPI_CSI_VCST0_FRS_Msk, R_MIPI_CSI_VCST0_FRD_Msk,
+		R_MIPI_CSI_VCST0_OVF_Msk, R_MIPI_CSI_VCST0_FSR_Msk, R_MIPI_CSI_VCST0_FER_Msk,
+	};
+	static const uint32_t dl_bits[4] = {
+		R_MIPI_CSI_DLST0_ESH_Msk, R_MIPI_CSI_DLST0_ESS_Msk, R_MIPI_CSI_DLST0_ECT_Msk,
+		R_MIPI_CSI_DLST0_EES_Msk,
+	};
+	uint32_t vc = R_MIPI_CSI->VCST0;
+	uint32_t dl = R_MIPI_CSI->DLST0 | R_MIPI_CSI->DLST1;
+
+	/* Write the read status back to clear it, like the FSP interrupt handlers do */
+	R_MIPI_CSI->VCSC0 = vc;
+	R_MIPI_CSI->DLSC0 = R_MIPI_CSI->DLST0 & ~R_MIPI_CSI_DLST0_ULP_Msk;
+	R_MIPI_CSI->DLSC1 = R_MIPI_CSI->DLST1 & ~R_MIPI_CSI_DLST0_ULP_Msk;
+
+	for (size_t i = 0; i < ARRAY_SIZE(vc_bits); i++) {
+		if ((vc & vc_bits[i]) != 0U) {
+			vin_dbg.vc[i]++;
+		}
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(dl_bits); i++) {
+		if ((dl & dl_bits[i]) != 0U) {
+			vin_dbg.dl[i]++;
+		}
+	}
+}
+
+static void video_renesas_ra_vin_dbg_print(void);
+
+static void video_renesas_ra_vin_dbg_timer_fn(struct k_timer *timer)
+{
+	static uint32_t ticks;
+
+	ARG_UNUSED(timer);
+	video_renesas_ra_vin_dbg_poll();
+
+	/* Print every 2 s so the counters show up even when no frame is delivered */
+	if ((++ticks % 1000U) == 0U) {
+		video_renesas_ra_vin_dbg_print();
+	}
+}
+
+K_TIMER_DEFINE(vin_dbg_timer, video_renesas_ra_vin_dbg_timer_fn, NULL);
+
+static void video_renesas_ra_vin_dbg_print(void)
+{
+	LOG_INF("DBG vin: isr=%u eof=%u field=%u fwc=%u fwc_null=%u scan=%u unknown=%u nobuf=%u",
+		vin_dbg.isr, vin_dbg.eof, vin_dbg.field, vin_dbg.fwc, vin_dbg.fwc_null,
+		vin_dbg.scan, vin_dbg.unknown, vin_dbg.nobuf);
+	LOG_INF("DBG csi vc: MLF=%u ECD=%u CRC=%u IDE=%u WCE=%u ECC1=%u ECN=%u", vin_dbg.vc[0],
+		vin_dbg.vc[1], vin_dbg.vc[2], vin_dbg.vc[3], vin_dbg.vc[4], vin_dbg.vc[5],
+		vin_dbg.vc[6]);
+	LOG_INF("DBG csi vc: FRS=%u FRD=%u OVF=%u FSR(frames seen by CSI)=%u FER=%u | lane: SOT=%u SYNC=%u CTL=%u ESC=%u",
+		vin_dbg.vc[7], vin_dbg.vc[8], vin_dbg.vc[9], vin_dbg.vc[10], vin_dbg.vc[11],
+		vin_dbg.dl[0], vin_dbg.dl[1], vin_dbg.dl[2], vin_dbg.dl[3]);
+}
+
 static void video_renesas_ra_vin_callback(capture_callback_args_t *p_args)
 {
 	const struct device *dev = (const struct device *)p_args->p_context;
@@ -202,6 +272,16 @@ static void video_renesas_ra_vin_callback(capture_callback_args_t *p_args)
 
 	if (!data->streaming) {
 		return;
+	}
+
+	/* TEMP DEBUG */
+	vin_dbg.isr++;
+	vin_dbg.eof += ints.bits.end_of_frame;
+	vin_dbg.field += ints.bits.field;
+	vin_dbg.scan += ints.bits.scanline;
+	vin_dbg.fwc += ints.bits.frame_complete;
+	if (ints.bits.frame_complete && p_args->p_buffer == NULL) {
+		vin_dbg.fwc_null++;
 	}
 
 	if (ints.bits.frame_complete && p_args->p_buffer != NULL) {
@@ -222,9 +302,11 @@ static void video_renesas_ra_vin_callback(capture_callback_args_t *p_args)
 			if (next != NULL) {
 				video_renesas_ra_vin_assign_mb_slot(dev, slot, next);
 			} else {
+				vin_dbg.nobuf++;
 				LOG_DBG("MB%d: no buffer in queue, frame may be dropped", slot + 1);
 			}
 		} else {
+			vin_dbg.unknown++;
 			LOG_DBG("Frame complete for unknown buffer %p", p_args->p_buffer);
 		}
 	}
@@ -498,6 +580,12 @@ static int video_renesas_ra_vin_dequeue(const struct device *dev, struct video_b
 		return -EAGAIN;
 	}
 
+	/*
+	 * The VIN writes the frame to memory by DMA: drop any stale data cache lines so the CPU
+	 * reads what the VIN wrote. No-op when the data cache is disabled.
+	 */
+	sys_cache_data_invd_range((*vbuf)->buffer, (*vbuf)->bytesused);
+
 	return 0;
 }
 
@@ -548,6 +636,7 @@ static int video_renesas_ra_vin_set_stream(const struct device *dev, bool enable
 		}
 
 		atomic_set(&data->streaming, 1);
+		k_timer_start(&vin_dbg_timer, K_MSEC(2), K_MSEC(2)); /* TEMP DEBUG */
 		LOG_INF("VIN streaming started");
 
 	} else {
@@ -566,6 +655,7 @@ static int video_renesas_ra_vin_set_stream(const struct device *dev, bool enable
 		}
 
 		atomic_set(&data->streaming, 0);
+		k_timer_stop(&vin_dbg_timer); /* TEMP DEBUG */
 
 		/*
 		 * Return any in-flight (pending) MB buffers to app via fifo_out.
@@ -916,8 +1006,8 @@ static int video_renesas_ra_vin_init(const struct device *dev)
 					},                                                         \
 				.csi_detect_bits =                                                 \
 					{                                                          \
-						.field_detect_enable = 1,                          \
-						.even_field_detect_enable = 1,                     \
+						.field_detect_enable = 0,                          \
+						.even_field_detect_enable = 0,                     \
 						.even_field_number = 0,                            \
 					},                                                         \
                                                                                                    \
